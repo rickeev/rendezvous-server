@@ -151,8 +151,9 @@ const cspConfig = {
     imgSrc: ["'self'", "data:", "https://maps.googleapis.com", "https://maps.gstatic.com"],
     connectSrc: ["'self'", "https://maps.googleapis.com"],
     fontSrc: ["'self'", "https://fonts.gstatic.com"],
-    objectSrc: ["'none'"],
-    upgradeInsecureRequests: []
+    objectSrc: ["'none'"]
+    // The below changes http to https, but it can mess up url paths
+    // upgradeInsecureRequests: []
   }
 };
 
