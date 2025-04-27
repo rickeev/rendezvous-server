@@ -19,38 +19,38 @@ const PORT = process.env.PORT || 5000;
 
 const API_BASE_PATH = process.env.API_BASE_PATH || '/api';
 
-// Create an axios instance with connection pooling and timeouts
+// Axios with connection pooling
 const api = axios.create({
   timeout: 10000,
   headers: {
     'Accept': 'application/json'
   },
-  // Keep connections alive for better performance
   maxContentLength: 50 * 1000 * 1000, // 50 MB
   maxBodyLength: 50 * 1000 * 1000, // 50 MB
-  // Add custom httpsAgent for connection reuse
   httpsAgent: new Agent({ keepAlive: true })
 });
 
-// Cache storage with maps for different API services
+// Cache storage
 const cache = {
   geocoding: new Map(),
   places: new Map(),
   details: new Map()
 };
 
-// Cache expiry times (milliseconds)
-const CACHE_EXPIRY = {
-  geocoding: 30 * 60 * 1000,  // 30 minutes
-  places: 15 * 60 * 1000,     // 15 minutes
-  details: 60 * 60 * 1000     // 60 minutes
-};
-
-// Memory management - cache size limits
-const CACHE_LIMITS = {
-  geocoding: 1000,
-  places: 500,
-  details: 500
+// Cache configuration
+const CACHE_CONFIG = {
+  geocoding: {
+    expiry: 30 * 60 * 1000,  // 30 minutes
+    limit: 1000
+  },
+  places: {
+    expiry: 15 * 60 * 1000,  // 15 minutes
+    limit: 500
+  },
+  details: {
+    expiry: 60 * 60 * 1000,  // 60 minutes
+    limit: 500
+  }
 };
 
 // Request tracking
@@ -59,16 +59,16 @@ const requestStats = {
   geocoding: 0,
   places: 0,
   details: 0,
-  limit: 50,  // Maximum requests per session
+  limit: 50,
   lastReset: Date.now()
 };
 
-// Rate limiting helper - adjusted for less strict limits
+// Rate limiting
 const rateLimiter = {
   lastGeocodeRequest: 0,
   lastPlacesRequest: 0,
   lastDetailsRequest: 0,
-  minInterval: 100, // 0.1 seconds between requests - reduced for better performance
+  minInterval: 100,
   
   canMakeRequest(type) {
     const now = Date.now();
@@ -91,7 +91,6 @@ const rateLimiter = {
         return false;
     }
     
-    // Check if enough time has passed since the last request
     if (now - lastRequest < this.minInterval) {
       console.log(`Rate limit check failed for ${type}. Only ${now - lastRequest}ms since last request.`);
       return false;
@@ -101,9 +100,8 @@ const rateLimiter = {
   }
 };
 
-// Session management - automatic reset after 24 hours
+// Session reset after 24 hours
 function checkSessionReset() {
-  // Reset stats after 24 hours
   if (Date.now() - requestStats.lastReset > 24 * 60 * 60 * 1000) {
     console.log('Resetting session stats (24-hour period elapsed)');
     Object.keys(requestStats).forEach(key => {
@@ -112,7 +110,6 @@ function checkSessionReset() {
       }
     });
     
-    // Clear all caches on session reset for clean state
     cache.geocoding.clear();
     cache.places.clear();
     cache.details.clear();
@@ -121,19 +118,17 @@ function checkSessionReset() {
   }
 }
 
-// Cache management - check cache size and purge oldest items if needed
+// Cache size management
 function manageCacheSize(type) {
   const cacheMap = cache[type];
-  const limit = CACHE_LIMITS[type];
+  const limit = CACHE_CONFIG[type].limit;
   
   if (cacheMap.size > limit) {
     console.log(`Cache ${type} exceeded limit (${cacheMap.size}/${limit}), purging oldest items`);
     
-    // Convert to array of [key, {data, timestamp}] pairs and sort by timestamp
     const entries = Array.from(cacheMap.entries())
       .sort((a, b) => a[1].timestamp - b[1].timestamp);
     
-    // Remove oldest 20% of entries
     const removeCount = Math.floor(entries.length * 0.2);
     for (let i = 0; i < removeCount; i++) {
       cacheMap.delete(entries[i][0]);
@@ -152,31 +147,40 @@ const cspConfig = {
     connectSrc: ["'self'", "https://maps.googleapis.com"],
     fontSrc: ["'self'", "https://fonts.gstatic.com"],
     objectSrc: ["'none'"]
-    // The below changes http to https, but it can mess up url paths
-    // upgradeInsecureRequests: []
   }
 };
 
-// Express rate limiter middleware
+// Rate limiter middleware
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.'
 });
 
-// Middleware - security and performance
-app.use(helmet({
-  contentSecurityPolicy: false
-})); // Security headers with proper CSP
-app.use(compression()); // Compress responses
+// Different security settings based on environment
+if (process.env.NODE_ENV === 'production') {
+  // Full security in production
+  app.use(helmet({
+    contentSecurityPolicy: cspConfig
+  }));
+} else {
+  // Reduced security headers for development
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    originAgentCluster: false
+  }));
+}
 
-// Secure CORS configuration
+app.use(compression());
+
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? [process.env.FRONTEND_URL || 'https://yourdomain.com'] // Restrict in production
-    : '*', // Allow all in development
+    ? [process.env.FRONTEND_URL || 'https://yourdomain.com']
+    : '*',
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -184,10 +188,8 @@ app.use(cors({
 
 app.use(express.json({ limit: '1mb' }));
 
-// Apply rate limiting to API routes
 app.use(API_BASE_PATH, apiLimiter);
 
-// Debug middleware to log all requests - only in development
 if (process.env.NODE_ENV !== 'production') {
   app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
@@ -205,40 +207,31 @@ app.use((req, res, next) => {
 });
 
 async function handleCachedRequest(type, cacheKey, apiUrl) {
-  // Check cache
   const cachedItem = cache[type].get(cacheKey);
-  if (cachedItem && (Date.now() - cachedItem.timestamp < CACHE_EXPIRY[type])) {
-    // Update access time to implement LRU behavior
+  if (cachedItem && (Date.now() - cachedItem.timestamp < CACHE_CONFIG[type].expiry)) {
     cachedItem.lastAccessed = Date.now();
     console.log(`Using cached ${type} data for ${cacheKey}`);
     return cachedItem.data;
   }
   
-  // Check limits
   if (requestStats.total >= requestStats.limit) {
     throw new Error('Request limit reached');
   }
   
-  // Rate limiting - with detailed logging
   if (!rateLimiter.canMakeRequest(type)) {
     throw new Error('Rate limit reached, please try again in a moment');
   }
   
-  // Make request
   try {
     console.log(`Making ${type} API request to Google Maps: ${apiUrl.replace(/key=[^&]+/, 'key=REDACTED')}`);
     
-    // Use our configured axios instance
     const response = await api.get(apiUrl);
     
-    // Log Google API response status
     console.log(`Google API response status: ${response.data.status}`);
     
-    // Update stats
     requestStats.total++;
     requestStats[type]++;
     
-    // Handle Google API errors
     if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
       console.error(`Google Maps API error: ${response.data.status}`);
       if (response.data.error_message) {
@@ -247,16 +240,13 @@ async function handleCachedRequest(type, cacheKey, apiUrl) {
       throw new Error(`Google Maps API error: ${response.data.status}`);
     }
     
-    // Cache and return successful response
     if (response.data.status === 'OK' || response.data.status === 'ZERO_RESULTS') {
-      // Store in cache with current timestamp
       cache[type].set(cacheKey, {
         data: response.data,
         timestamp: Date.now(),
         lastAccessed: Date.now()
       });
       
-      // Check and manage cache size
       manageCacheSize(type);
     }
     
@@ -264,14 +254,10 @@ async function handleCachedRequest(type, cacheKey, apiUrl) {
   } catch (error) {
     console.error(`Error in ${type} request:`, error.message);
     
-    // More detailed error logging
     if (error.response) {
-      // The request was made and the server responded with a status code
-      // that falls out of the range of 2xx
       console.error('Response data:', error.response.data);
       console.error('Response status:', error.response.status);
     } else if (error.request) {
-      // The request was made but no response was received
       console.error('No response received');
     }
     
@@ -279,7 +265,7 @@ async function handleCachedRequest(type, cacheKey, apiUrl) {
   }
 }
 
-// Input validation helpers
+// Validation helpers
 function validateCoordinates(lat, lng) {
   const latNum = parseFloat(lat);
   const lngNum = parseFloat(lng);
@@ -297,16 +283,14 @@ function validateCoordinates(lat, lng) {
 
 function sanitizeInput(input) {
   if (typeof input !== 'string') return '';
-  // Basic sanitization - remove potentially dangerous characters
   return input.replace(/[<>]/g, '');
 }
 
-// Helper for batch geocoding requests
+// Batch geocoding helper
 async function batchGeocode(addresses) {
   const results = [];
   const errors = [];
   
-  // Validate input addresses
   const validatedAddresses = addresses.filter(addr => {
     if (typeof addr !== 'string' || addr.trim().length === 0) {
       errors.push({ address: addr, error: 'Invalid address format' });
@@ -315,7 +299,6 @@ async function batchGeocode(addresses) {
     return true;
   }).map(addr => sanitizeInput(addr));
   
-  // Process in batches of 5 (Google allows up to 10, but let's be conservative)
   const batchSize = 5;
   
   for (let i = 0; i < validatedAddresses.length; i += batchSize) {
@@ -333,10 +316,8 @@ async function batchGeocode(addresses) {
       }
     });
     
-    // Wait for current batch to complete before starting next batch
     const batchResults = await Promise.all(promises);
     
-    // Process batch results
     for (const result of batchResults) {
       if (result.error) {
         errors.push({ address: result.address, error: result.error });
@@ -345,7 +326,6 @@ async function batchGeocode(addresses) {
       }
     }
     
-    // Add a small delay between batches to avoid rate limiting
     if (i + batchSize < validatedAddresses.length) {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
@@ -354,7 +334,6 @@ async function batchGeocode(addresses) {
   return { results, errors };
 }
 
-// Define routes with the consistent base path
 const apiRoutes = express.Router();
 
 // Root route handler
@@ -396,17 +375,16 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Test endpoint to verify server is responsive
+// Health check endpoint
 apiRoutes.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Server is running' });
 });
 
-// API Key verification endpoint - only available in non-production
+// API Key verification endpoint
 if (process.env.NODE_ENV !== 'production') {
   apiRoutes.get('/verify-key', (req, res) => {
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
     
-    // Check if key exists
     if (!apiKey) {
       return res.status(500).json({ 
         status: 'ERROR', 
@@ -414,7 +392,6 @@ if (process.env.NODE_ENV !== 'production') {
       });
     }
     
-    // Return partial key for verification (hide most of it for security)
     res.json({ 
       status: 'OK', 
       message: 'API key found', 
@@ -423,7 +400,7 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
-// Stats endpoint for monitoring
+// Stats endpoint
 apiRoutes.get('/stats', (req, res) => {
   checkSessionReset();
   res.json({
@@ -436,9 +413,8 @@ apiRoutes.get('/stats', (req, res) => {
   });
 });
 
-// Reset stats endpoint (for testing or manual reset) - admin only
+// Reset stats endpoint
 apiRoutes.post('/stats/reset', (req, res) => {
-  // Add authentication check here for production
   if (process.env.NODE_ENV === 'production' && (!req.headers.authorization || req.headers.authorization !== `Bearer ${process.env.ADMIN_API_KEY}`)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -451,7 +427,6 @@ apiRoutes.post('/stats/reset', (req, res) => {
   });
   requestStats.lastReset = Date.now();
   
-  // Also clear caches
   cache.geocoding.clear();
   cache.places.clear();
   cache.details.clear();
@@ -459,7 +434,7 @@ apiRoutes.post('/stats/reset', (req, res) => {
   res.json({ message: 'Stats reset successfully', requestStats });
 });
 
-// Endpoint for geocoding
+// Geocoding endpoint
 apiRoutes.get('/geocode', async (req, res) => {
   const address = req.query.address;
   
@@ -468,7 +443,6 @@ apiRoutes.get('/geocode', async (req, res) => {
   }
   
   try {
-    // Sanitize input
     const sanitizedAddress = sanitizeInput(address);
     const normalizedAddress = sanitizedAddress.toLowerCase().trim();
     const cacheKey = normalizedAddress;
@@ -497,7 +471,7 @@ apiRoutes.post('/geocode/batch', async (req, res) => {
   }
 });
 
-// Endpoint for nearby places with pagination
+// Nearby places endpoint
 apiRoutes.get('/places/nearby', async (req, res) => {
   const { lat, lng, radius, type, pagetoken } = req.query;
   
@@ -506,9 +480,7 @@ apiRoutes.get('/places/nearby', async (req, res) => {
   }
   
   try {
-    // If using pagetoken, it's the only parameter needed
     if (pagetoken) {
-      // Validate pagetoken format
       if (typeof pagetoken !== 'string' || pagetoken.length > 300) {
         return res.status(400).json({ error: 'Invalid pagetoken format' });
       }
@@ -516,7 +488,6 @@ apiRoutes.get('/places/nearby', async (req, res) => {
       const cacheKey = `pagetoken:${pagetoken}`;
       const apiUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?pagetoken=${encodeURIComponent(pagetoken)}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
       
-      // Page tokens require a delay before they're valid
       await new Promise(resolve => setTimeout(resolve, 2000));
       
       const data = await handleCachedRequest('places', cacheKey, apiUrl);
@@ -524,16 +495,13 @@ apiRoutes.get('/places/nearby', async (req, res) => {
       return;
     }
     
-    // Validate coordinates
     if (!validateCoordinates(lat, lng)) {
       return res.status(400).json({ error: 'Invalid coordinates format' });
     }
     
-    // Validate and sanitize radius and type
     const safeRadius = Math.min(Math.max(parseInt(radius) || 1609.34, 100), 50000);
     const safeType = /^[a-zA-Z_]+$/.test(type) ? type : 'restaurant';
     
-    // Normal nearby search
     const cacheKey = `${lat},${lng},${safeRadius},${safeType}`;
     const apiUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${safeRadius}&type=${safeType}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
     
@@ -544,7 +512,7 @@ apiRoutes.get('/places/nearby', async (req, res) => {
   }
 });
 
-// Endpoint for place details
+// Place details endpoint
 apiRoutes.get('/places/details', async (req, res) => {
   const { placeid, fields } = req.query;
   
@@ -553,15 +521,12 @@ apiRoutes.get('/places/details', async (req, res) => {
   }
   
   try {
-    // Validate placeid format
     if (typeof placeid !== 'string' || placeid.length > 300 || !/^[a-zA-Z0-9_\-]+$/.test(placeid)) {
       return res.status(400).json({ error: 'Invalid place ID format' });
     }
     
-    // Validate fields if provided
     let fieldsParam = '';
     if (fields) {
-      // Only allow specific field names
       const allowedFields = ['name', 'rating', 'formatted_address', 'geometry', 'photos', 'price_level', 'opening_hours', 'website'];
       const fieldList = fields.split(',').filter(field => allowedFields.includes(field.trim()));
       if (fieldList.length > 0) {
@@ -579,7 +544,7 @@ apiRoutes.get('/places/details', async (req, res) => {
   }
 });
 
-// Photo proxy endpoint to avoid exposing API key in frontend
+// Photo proxy endpoint
 apiRoutes.get('/places/photo', async (req, res) => {
   const { photoreference, maxwidth = 400 } = req.query;
   
@@ -588,25 +553,20 @@ apiRoutes.get('/places/photo', async (req, res) => {
   }
   
   try {
-    // Validate inputs
     if (typeof photoreference !== 'string' || photoreference.length > 500) {
       return res.status(400).json({ error: 'Invalid photo reference' });
     }
     
-    // Limit maxwidth to reasonable values
     const safeMaxWidth = Math.min(Math.max(parseInt(maxwidth) || 400, 100), 1600);
     
-    // Make request to Google's photo API
     const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=${safeMaxWidth}&photoreference=${encodeURIComponent(photoreference)}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
     
     const photoResponse = await api.get(photoUrl, {
       responseType: 'stream'
     });
     
-    // Forward the content type
     res.set('Content-Type', photoResponse.headers['content-type']);
     
-    // Pipe the photo data directly to the response
     photoResponse.data.pipe(res);
   } catch (error) {
     console.error('Error fetching photo:', error.message);
@@ -626,13 +586,10 @@ apiRoutes.post('/places/details/batch', async (req, res) => {
     const results = [];
     const errors = [];
     
-    // Process in batches of 5
     const batchSize = 5;
     
-    // Validate fields if provided
     let fieldsParam = '';
     if (fields && Array.isArray(fields)) {
-      // Only allow specific field names
       const allowedFields = ['name', 'rating', 'formatted_address', 'geometry', 'photos', 'price_level', 'opening_hours', 'website'];
       const fieldList = fields.filter(field => 
         typeof field === 'string' && allowedFields.includes(field.trim())
@@ -642,7 +599,6 @@ apiRoutes.post('/places/details/batch', async (req, res) => {
       }
     }
     
-    // Validate placeIds
     const validPlaceIds = placeIds.filter(id => 
       typeof id === 'string' && id.length <= 300 && /^[a-zA-Z0-9_\-]+$/.test(id)
     );
@@ -675,7 +631,6 @@ apiRoutes.post('/places/details/batch', async (req, res) => {
         }
       }
       
-      // Add a small delay between batches
       if (i + batchSize < validPlaceIds.length) {
         await new Promise(resolve => setTimeout(resolve, 200));
       }
@@ -687,7 +642,7 @@ apiRoutes.post('/places/details/batch', async (req, res) => {
   }
 });
 
-// Mount all API routes with the base path
+// Mount API routes
 app.use(API_BASE_PATH, apiRoutes);
 
 // Catch-all route for SPA in production
@@ -697,7 +652,7 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// Error handling middleware (must be after all routes)
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({ 
@@ -717,7 +672,6 @@ app.listen(PORT, () => {
     console.log(`API Key preview: ${key.substring(0, 4)}...${key.substring(key.length - 4)}`);
   }
   
-  // Display memory usage
   const memoryUsage = process.memoryUsage();
   console.log('Memory usage:', {
     rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
