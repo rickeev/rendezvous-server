@@ -209,6 +209,8 @@ app.use((req, res, next) => {
   next();
 });
 
+console.log(`Full Google Maps API URL: ${apiUrl.replace(process.env.GOOGLE_MAPS_API_KEY, 'REDACTED')}`);
+
 async function handleCachedRequest(type, cacheKey, apiUrl) {
   const cachedItem = cache[type].get(cacheKey);
   if (cachedItem && (Date.now() - cachedItem.timestamp < CACHE_CONFIG[type].expiry)) {
