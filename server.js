@@ -368,7 +368,6 @@ app.get('/', (req, res) => {
         <div class="api-info">
           <p>Server Status: <strong>Online</strong></p>
           <p>API Endpoints available at: <code>${API_BASE_PATH}</code></p>
-          <p>Health Check: <a href="${API_BASE_PATH}/health">Check API Status</a></p>
         </div>
       </body>
     </html>
