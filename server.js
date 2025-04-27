@@ -356,6 +356,45 @@ async function batchGeocode(addresses) {
 // Define routes with the consistent base path
 const apiRoutes = express.Router();
 
+// Root route handler
+app.get('/', (req, res) => {
+  res.send(`
+    <html>
+      <head>
+        <title>Rendezvous Server</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+          }
+          h1 {
+            color: #333;
+          }
+          .api-info {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+          }
+        </style>
+      </head>
+      <body>
+        <h1>Rendezvous Server</h1>
+        <p>Welcome to the Rendezvous Server! This service provides geocoding and places API functionality.</p>
+        
+        <div class="api-info">
+          <p>Server Status: <strong>Online</strong></p>
+          <p>API Endpoints available at: <code>${API_BASE_PATH}</code></p>
+          <p>Health Check: <a href="${API_BASE_PATH}/health">Check API Status</a></p>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
 // Test endpoint to verify server is responsive
 apiRoutes.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Server is running' });
