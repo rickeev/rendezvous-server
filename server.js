@@ -168,7 +168,7 @@ const apiLimiter = rateLimit({
 
 // Middleware - security and performance
 app.use(helmet({
-  contentSecurityPolicy: cspConfig
+  contentSecurityPolicy: false
 })); // Security headers with proper CSP
 app.use(compression()); // Compress responses
 
