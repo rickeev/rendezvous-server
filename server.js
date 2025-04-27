@@ -53,50 +53,51 @@ const CACHE_CONFIG = {
   }
 };
 
-// Request tracking
+// Enhanced request tracking with more flexible limits
 const requestStats = {
   total: 0,
   geocoding: 0,
   places: 0,
   details: 0,
-  limit: 50,
+  limit: 100, // Increased from 50 to 100
+  softLimit: 20, // New soft limit for friendlier user experience
   lastReset: Date.now()
 };
 
-// Rate limiting
+// Improved rate limiting mechanism
 const rateLimiter = {
-  lastGeocodeRequest: 0,
-  lastPlacesRequest: 0,
-  lastDetailsRequest: 0,
-  minInterval: 100,
+  requestLog: [],
+  maxRequestsPerMinute: 10,
+  minIntervalMs: 200,
   
-  canMakeRequest(type) {
+  canMakeRequest() {
     const now = Date.now();
-    let lastRequest;
     
-    switch(type) {
-      case 'geocoding':
-        lastRequest = this.lastGeocodeRequest;
-        this.lastGeocodeRequest = now;
-        break;
-      case 'places':
-        lastRequest = this.lastPlacesRequest;
-        this.lastPlacesRequest = now;
-        break;
-      case 'details':
-        lastRequest = this.lastDetailsRequest;
-        this.lastDetailsRequest = now;
-        break;
-      default:
-        return false;
-    }
+    // Remove old requests (older than 1 minute)
+    this.requestLog = this.requestLog.filter(time => now - time < 60000);
     
-    if (now - lastRequest < this.minInterval) {
-      console.log(`Rate limit check failed for ${type}. Only ${now - lastRequest}ms since last request.`);
+    // Check number of recent requests
+    if (this.requestLog.length >= this.maxRequestsPerMinute) {
+      console.log(`Rate limit exceeded: ${this.requestLog.length} requests in the last minute`);
       return false;
     }
     
+    // Check minimum interval between requests
+    if (this.requestLog.length > 0) {
+      const lastRequestTime = this.requestLog[this.requestLog.length - 1];
+      if (now - lastRequestTime < this.minIntervalMs) {
+        console.log(`Minimum interval not met: ${now - lastRequestTime}ms since last request`);
+        return false;
+      }
+    }
+    
+    // Log this request
+    this.requestLog.push(now);
     return true;
+  },
+  
+  resetRequestLog() {
+    this.requestLog = [];
   }
 };
 
@@ -105,7 +106,7 @@ function checkSessionReset() {
   if (Date.now() - requestStats.lastReset > 24 * 60 * 60 * 1000) {
     console.log('Resetting session stats (24-hour period elapsed)');
     Object.keys(requestStats).forEach(key => {
-      if (typeof requestStats[key] === 'number' && key !== 'limit') {
+      if (typeof requestStats[key] === 'number' && key !== 'limit' && key !== 'softLimit') {
         requestStats[key] = 0;
       }
     });
@@ -113,6 +114,8 @@ function checkSessionReset() {
     cache.geocoding.clear();
     cache.places.clear();
     cache.details.clear();
+    
+    rateLimiter.resetRequestLog();
     
     requestStats.lastReset = Date.now();
   }
@@ -150,10 +153,10 @@ const cspConfig = {
   }
 };
 
-// Rate limiter middleware
+// Global rate limiter with more generous settings
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 100, // Allow 100 requests per window
   standardHeaders: true,
   legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.'
@@ -214,12 +217,19 @@ async function handleCachedRequest(type, cacheKey, apiUrl) {
     return cachedItem.data;
   }
   
+  // More flexible request limiting
   if (requestStats.total >= requestStats.limit) {
     throw new Error('Request limit reached');
   }
   
-  if (!rateLimiter.canMakeRequest(type)) {
-    throw new Error('Rate limit reached, please try again in a moment');
+  // Implement the new rate limiter
+  if (!rateLimiter.canMakeRequest()) {
+    // Distinguish between soft and hard limits
+    if (requestStats.total >= requestStats.softLimit) {
+      throw new Error('Too many requests. Please wait a moment and try again.');
+    }
+    // If below soft limit, allow the request but with a slight delay
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
   
   try {
@@ -376,7 +386,15 @@ app.get('/', (req, res) => {
 
 // Health check endpoint
 apiRoutes.get('/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Server is running' });
+  res.json({ 
+    status: 'OK', 
+    message: 'Server is running',
+    requestStats: {
+      total: requestStats.total,
+      limit: requestStats.limit,
+      softLimit: requestStats.softLimit
+    }
+  });
 });
 
 // API Key verification endpoint
@@ -420,11 +438,13 @@ apiRoutes.post('/stats/reset', (req, res) => {
   
   console.log('Manually resetting API stats');
   Object.keys(requestStats).forEach(key => {
-    if (typeof requestStats[key] === 'number' && key !== 'limit') {
+    if (typeof requestStats[key] === 'number' && key !== 'limit' && key !== 'softLimit') {
       requestStats[key] = 0;
     }
   });
   requestStats.lastReset = Date.now();
+  
+  rateLimiter.resetRequestLog();
   
   cache.geocoding.clear();
   cache.places.clear();
@@ -448,9 +468,28 @@ apiRoutes.get('/geocode', async (req, res) => {
     const apiUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(sanitizedAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
     
     const data = await handleCachedRequest('geocoding', cacheKey, apiUrl);
-    res.json(data);
+    
+    // Add some extra helpful information to the response
+    const responseData = {
+      ...data,
+      requestStats: {
+        total: requestStats.total,
+        limit: requestStats.limit,
+        softLimit: requestStats.softLimit
+      }
+    };
+    
+    res.json(responseData);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // Provide more informative error response
+    res.status(500).json({ 
+      error: error.message,
+      requestStats: {
+        total: requestStats.total,
+        limit: requestStats.limit,
+        softLimit: requestStats.softLimit
+      }
+    });
   }
 });
 
@@ -462,11 +501,37 @@ apiRoutes.post('/geocode/batch', async (req, res) => {
     return res.status(400).json({ error: 'Array of addresses is required' });
   }
   
+  // Limit batch size to prevent abuse
+  if (addresses.length > 10) {
+    return res.status(400).json({ 
+      error: 'Too many addresses. Maximum 10 addresses allowed per batch request.',
+      maxAddressesAllowed: 10
+    });
+  }
+  
   try {
     const results = await batchGeocode(addresses);
-    res.json(results);
+    
+    // Add request stats to the response
+    const responseData = {
+      ...results,
+      requestStats: {
+        total: requestStats.total,
+        limit: requestStats.limit,
+        softLimit: requestStats.softLimit
+      }
+    };
+    
+    res.json(responseData);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message,
+      requestStats: {
+        total: requestStats.total,
+        limit: requestStats.limit,
+        softLimit: requestStats.softLimit
+      }
+    });
   }
 });
 
@@ -581,6 +646,14 @@ apiRoutes.post('/places/details/batch', async (req, res) => {
     return res.status(400).json({ error: 'Array of place IDs is required' });
   }
   
+  // Limit batch size to prevent abuse
+  if (placeIds.length > 10) {
+    return res.status(400).json({ 
+      error: 'Too many place IDs. Maximum 10 place IDs allowed per batch request.',
+      maxPlaceIdsAllowed: 10
+    });
+  }
+  
   try {
     const results = [];
     const errors = [];
@@ -635,9 +708,27 @@ apiRoutes.post('/places/details/batch', async (req, res) => {
       }
     }
     
-    res.json({ results, errors });
+    // Wrap response with request stats
+    const responseData = {
+      results, 
+      errors,
+      requestStats: {
+        total: requestStats.total,
+        limit: requestStats.limit,
+        softLimit: requestStats.softLimit
+      }
+    };
+    
+    res.json(responseData);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message,
+      requestStats: {
+        total: requestStats.total,
+        limit: requestStats.limit,
+        softLimit: requestStats.softLimit
+      }
+    });
   }
 });
 
@@ -658,7 +749,12 @@ app.use((err, req, res, next) => {
     error: process.env.NODE_ENV === 'production' 
       ? 'Internal server error' 
       : err.message || 'Internal server error', 
-    status: 'ERROR' 
+    status: 'ERROR',
+    requestStats: {
+      total: requestStats.total,
+      limit: requestStats.limit,
+      softLimit: requestStats.softLimit
+    }
   });
 });
 
